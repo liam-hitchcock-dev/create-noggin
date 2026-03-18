@@ -1,0 +1,283 @@
+#!/bin/bash
+set -euo pipefail
+
+# Resolve repo dir: follow symlink from ~/bin/noggin back to the repo
+SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
+REPO_DIR="$(dirname "$SCRIPT_PATH")"
+cd "$REPO_DIR"
+
+usage() {
+    echo "noggin - claude-noggin sync tool"
+    echo ""
+    echo "Usage: noggin <command>"
+    echo ""
+    echo "Commands:"
+    echo "  status    Show sync status (last sync, pending changes, health)"
+    echo "  push      Commit and push any pending changes"
+    echo "  pull      Pull latest from remote"
+    echo "  log       Show recent sync history"
+    echo "  diff      Show uncommitted changes"
+    echo "  doctor    Detect and repair broken symlinks"
+    echo "  update    Update noggin scripts to latest version"
+    echo "  install   Run install script (symlink into ~/.claude)"
+}
+
+cmd_status() {
+    echo "noggin status"
+    echo "============="
+    echo ""
+
+    # Last push
+    LAST_PUSH=$(git log -1 --format="%ar (%ci)" 2>/dev/null || echo "never")
+    echo "Last commit: $LAST_PUSH"
+
+    # Remote sync
+    git fetch --quiet 2>/dev/null
+    LOCAL=$(git rev-parse HEAD 2>/dev/null)
+    REMOTE=$(git rev-parse origin/main 2>/dev/null || echo "unknown")
+    if [ "$LOCAL" = "$REMOTE" ]; then
+        echo "Remote sync: up to date"
+    else
+        AHEAD=$(git rev-list origin/main..HEAD --count 2>/dev/null || echo "?")
+        BEHIND=$(git rev-list HEAD..origin/main --count 2>/dev/null || echo "?")
+        [ "$AHEAD" != "0" ] && echo "Remote sync: $AHEAD commits ahead"
+        [ "$BEHIND" != "0" ] && echo "Remote sync: $BEHIND commits behind"
+    fi
+
+    # Pending changes
+    CHANGES=$(git status --porcelain | wc -l | tr -d ' ')
+    if [ "$CHANGES" = "0" ]; then
+        echo "Pending changes: none"
+    else
+        echo "Pending changes: $CHANGES file(s)"
+        git status --porcelain | sed 's/^/  /'
+    fi
+
+    # Launchd status
+    if launchctl list 2>/dev/null | grep -q "claude-noggin"; then
+        echo "Auto-push (launchd): running"
+    else
+        echo "Auto-push (launchd): not loaded"
+    fi
+
+    # Symlink health
+    echo ""
+    echo "Symlinks:"
+    for item in skills scripts settings.json; do
+        target="$HOME/.claude/$item"
+        if [ -L "$target" ]; then
+            echo "  ~/.claude/$item -> $(readlink "$target") [ok]"
+        elif [ -e "$target" ]; then
+            echo "  ~/.claude/$item [not linked, real file]"
+        else
+            echo "  ~/.claude/$item [missing]"
+        fi
+    done
+}
+
+cmd_push() {
+    if [ -z "$(git status --porcelain)" ]; then
+        echo "Nothing to push."
+        exit 0
+    fi
+
+    CHANGED=$(git status --porcelain | awk '{print $2}' | xargs -I{} basename {} | sort -u | paste -sd ", " -)
+    git add -A
+    git commit -m "noggin push: $CHANGED"
+    git push
+    echo "Pushed."
+}
+
+cmd_pull() {
+    git pull --rebase
+    echo "Pulled."
+}
+
+cmd_log() {
+    git log --oneline -20
+}
+
+cmd_diff() {
+    if [ -z "$(git status --porcelain)" ]; then
+        echo "No changes."
+    else
+        git diff
+        echo ""
+        echo "Untracked:"
+        git ls-files --others --exclude-standard
+    fi
+}
+
+cmd_doctor() {
+    echo "noggin doctor"
+    echo "============="
+    echo ""
+
+    CLAUDE_DIR="$HOME/.claude"
+    FIXED=0
+    PROBLEMS=0
+
+    for item in skills scripts settings.json; do
+        target="$CLAUDE_DIR/$item"
+        source="$REPO_DIR/$item"
+
+        if [ -L "$target" ]; then
+            echo "  $item: ok (symlinked)"
+            continue
+        fi
+
+        if [ ! -e "$target" ]; then
+            # Missing entirely — create the symlink
+            ln -s "$source" "$target"
+            echo "  $item: created symlink"
+            FIXED=$((FIXED + 1))
+            continue
+        fi
+
+        # Real file/dir exists where symlink should be
+        PROBLEMS=$((PROBLEMS + 1))
+        echo "  $item: real file found, repairing..."
+
+        if [ -d "$target" ] && [ -d "$source" ]; then
+            # Merge contents into repo, skip existing
+            for entry in "$target"/*; do
+                name=$(basename "$entry")
+                if [ ! -e "$source/$name" ]; then
+                    cp -r "$entry" "$source/$name"
+                    echo "    merged: $name"
+                fi
+            done
+        elif [ -f "$target" ] && [ -f "$source" ]; then
+            # For files (settings.json), keep the repo version
+            # but back up the local one in case it has unique content
+            :
+        fi
+
+        # Back up and replace with symlink
+        backup="${target}.bak.$(date +%s)"
+        mv "$target" "$backup"
+        ln -s "$source" "$target"
+        echo "    backed up to $(basename "$backup")"
+        echo "    symlinked"
+        FIXED=$((FIXED + 1))
+    done
+
+    echo ""
+    if [ "$PROBLEMS" -eq 0 ] && [ "$FIXED" -eq 0 ]; then
+        echo "Everything looks good."
+    else
+        echo "Repaired $FIXED item(s)."
+        # Check if there are new files to commit
+        if [ -n "$(git status --porcelain)" ]; then
+            echo ""
+            echo "New files merged into repo. Run 'noggin push' to sync."
+        fi
+    fi
+}
+
+cmd_update() {
+    echo "noggin update"
+    echo "============="
+    echo ""
+
+    # Check for npm/npx
+    if ! command -v npx &>/dev/null; then
+        echo "Error: npx not found. Install Node.js 18+ first."
+        exit 1
+    fi
+
+    # Fetch latest into a temp dir
+    TMPDIR=$(mktemp -d)
+    trap 'rm -rf "$TMPDIR"' EXIT
+
+    echo "Fetching latest create-noggin..."
+    npx --yes create-noggin --yes --no-symlink --dir="$TMPDIR/fresh" >/dev/null 2>&1
+
+    if [ ! -d "$TMPDIR/fresh" ]; then
+        echo "Error: failed to fetch latest version."
+        exit 1
+    fi
+
+    # These are safe to overwrite — they're noggin plumbing, not user content
+    UPDATABLE=(
+        "noggin"
+        "autopush.sh"
+        "install.sh"
+        "scripts/noggin-autopush.sh"
+        "scripts/session-pull.sh"
+        "scripts/session-log.sh"
+    )
+
+    UPDATED=0
+    UNCHANGED=0
+
+    for file in "${UPDATABLE[@]}"; do
+        src="$TMPDIR/fresh/$file"
+        dest="$REPO_DIR/$file"
+
+        if [ ! -f "$src" ]; then
+            continue
+        fi
+
+        if [ ! -f "$dest" ]; then
+            mkdir -p "$(dirname "$dest")"
+            cp "$src" "$dest"
+            chmod +x "$dest"
+            echo "  + $file (new)"
+            UPDATED=$((UPDATED + 1))
+            continue
+        fi
+
+        if diff -q "$src" "$dest" &>/dev/null; then
+            UNCHANGED=$((UNCHANGED + 1))
+            continue
+        fi
+
+        cp "$src" "$dest"
+        chmod +x "$dest"
+        echo "  ~ $file (updated)"
+        UPDATED=$((UPDATED + 1))
+    done
+
+    # Also update the bundled skill templates if they don't conflict with user skills
+    for skill_dir in "$TMPDIR/fresh/skills"/*/; do
+        [ -d "$skill_dir" ] || continue
+        name=$(basename "$skill_dir")
+        dest_dir="$REPO_DIR/skills/$name"
+
+        if [ ! -d "$dest_dir" ]; then
+            cp -r "$skill_dir" "$dest_dir"
+            echo "  + skills/$name (new)"
+            UPDATED=$((UPDATED + 1))
+        fi
+    done
+
+    echo ""
+    if [ "$UPDATED" -eq 0 ]; then
+        echo "Already up to date."
+    else
+        echo "Updated $UPDATED file(s). $UNCHANGED unchanged."
+        if [ -n "$(git status --porcelain)" ]; then
+            echo ""
+            echo "Run 'noggin push' to sync the update."
+        fi
+    fi
+}
+
+cmd_install() {
+    exec "$REPO_DIR/install.sh"
+}
+
+case "${1:-}" in
+    status)  cmd_status ;;
+    push)    cmd_push ;;
+    pull)    cmd_pull ;;
+    log)     cmd_log ;;
+    diff)    cmd_diff ;;
+    doctor)  cmd_doctor ;;
+    update)  cmd_update ;;
+    install) cmd_install ;;
+    -h|--help|help) usage ;;
+    "") usage ;;
+    *) echo "Unknown command: $1"; usage; exit 1 ;;
+esac
