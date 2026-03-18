@@ -54,6 +54,7 @@ Tools like `npx skills-installer` can replace your `~/.claude/skills/` symlink w
 npx create-noggin --yes              # accept all defaults, no prompts
 npx create-noggin --dir=~/my-config  # custom directory
 npx create-noggin --no-symlink       # skip symlinking (for testing)
+npx create-noggin -v                 # show version (also --version)
 ```
 
 ## Syncing to a second machine
