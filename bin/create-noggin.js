@@ -12,6 +12,13 @@ const TEMPLATES_DIR = path.join(__dirname, "..", "templates");
 
 // Parse CLI args
 const args = process.argv.slice(2);
+
+if (args.includes("--version") || args.includes("-v")) {
+  const pkg = require(path.join(__dirname, "..", "package.json"));
+  console.log(`create-noggin v${pkg.version}`);
+  process.exit(0);
+}
+
 const YES = args.includes("--yes") || args.includes("-y");
 const NO_SYMLINK = args.includes("--no-symlink");
 const dirArg = args.find((a) => a.startsWith("--dir="));
