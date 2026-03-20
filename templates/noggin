@@ -14,7 +14,7 @@ usage() {
     echo "Commands:"
     echo "  status    Show sync status (last sync, pending changes, health)"
     echo "  push      Commit and push any pending changes"
-    echo "  pull      Pull latest from remote"
+    echo "  pull      Pull latest from remote (--force to stash and pull)"
     echo "  log       Show recent sync history"
     echo "  diff      Show uncommitted changes"
     echo "  doctor    Detect and repair broken symlinks"
@@ -89,8 +89,44 @@ cmd_push() {
 }
 
 cmd_pull() {
+    FORCE=false
+    for arg in "$@"; do [ "$arg" = "--force" ] && FORCE=true; done
+
+    DIRTY=$(git status --porcelain 2>/dev/null)
+    if [ -n "$DIRTY" ]; then
+        echo "Local changes would block pull:"
+        echo ""
+        git diff --color=always 2>/dev/null
+        echo ""
+        echo "Changed files:"
+        git status --porcelain | while IFS= read -r line; do
+            echo "  $line"
+        done
+
+        if [ "$FORCE" = false ]; then
+            echo ""
+            echo "Options:"
+            echo "  \$ noggin push           commit and push local changes first"
+            echo "  \$ noggin pull --force   stash changes, pull, then reapply"
+            return
+        fi
+
+        echo ""
+        echo "Stashing local changes..."
+        git stash --include-untracked
+    fi
+
     git pull --rebase
-    echo "Pulled."
+
+    if [ -n "$DIRTY" ] && [ "$FORCE" = true ]; then
+        echo ""
+        echo "Reapplying stashed changes..."
+        if git stash pop; then
+            echo "Local changes reapplied."
+        else
+            echo "Stash conflicts - resolve with: git stash pop"
+        fi
+    fi
 }
 
 cmd_log() {
@@ -271,7 +307,7 @@ cmd_install() {
 case "${1:-}" in
     status)  cmd_status ;;
     push)    cmd_push ;;
-    pull)    cmd_pull ;;
+    pull)    shift; cmd_pull "$@" ;;
     log)     cmd_log ;;
     diff)    cmd_diff ;;
     doctor)  cmd_doctor ;;

@@ -24,6 +24,17 @@ if [ "$BEHIND" = "0" ]; then
     exit 0
 fi
 
+# Check for local changes
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+    echo "noggin: cannot pull - local changes would be overwritten"
+    echo ""
+    git diff --stat 2>/dev/null | sed 's/^/  /'
+    echo ""
+    echo "  Run: noggin push   (commit first)"
+    echo "  Run: noggin pull --force   (stash, pull, reapply)"
+    exit 0
+fi
+
 # Pull and capture what changed
 DIFF_SUMMARY=$(git diff --stat HEAD..origin/main 2>/dev/null)
 COMMIT_SUMMARY=$(git log --oneline HEAD..origin/main 2>/dev/null)
