@@ -51,7 +51,17 @@ fi
 
 git add -A
 git commit --quiet -m "auto($CATEGORY): update $FNAME" -m "${DIFF_SUMMARY:-no diff summary}"
-git push --quiet &
-disown
+
+# Push synchronously, and on a non-fast-forward rejection rebase onto the remote
+# and retry once. The old code backgrounded the push and ignored failures, so a
+# rejected push silently diverged local from remote and wedged the next pull.
+if ! git push --quiet 2>/tmp/noggin-autopush-err.log; then
+    if git pull --quiet --rebase 2>>/tmp/noggin-autopush-err.log; then
+        git push --quiet 2>>/tmp/noggin-autopush-err.log || true
+    else
+        git rebase --abort 2>/dev/null || true
+        echo "noggin: ⚠️  autopush could not sync (rebase conflict) — left clean, will retry on next pull" >&2
+    fi
+fi
 
 exit 0

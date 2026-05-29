@@ -39,7 +39,16 @@ fi
 DIFF_SUMMARY=$(git diff --stat HEAD..origin/main 2>/dev/null)
 COMMIT_SUMMARY=$(git log --oneline HEAD..origin/main 2>/dev/null)
 
-git pull --quiet --rebase 2>/dev/null
+# Rebase local work onto the incoming changes. Capture stderr instead of
+# discarding it: a silent failure here used to leave a half-finished rebase
+# while still printing "pulled", which wedged the repo until cleared by hand.
+if ! git pull --quiet --rebase 2>/tmp/noggin-pull-err.log; then
+    git rebase --abort 2>/dev/null || true
+    echo "noggin: ⚠️  pull failed (rebase conflict) — aborted, repo left clean at local HEAD."
+    echo "noggin: run 'noggin pull --force' to stash, pull, and reapply. Details:"
+    sed 's/^/  /' /tmp/noggin-pull-err.log 2>/dev/null
+    exit 1
+fi
 
 echo "noggin: pulled $BEHIND new change(s) from another machine"
 echo ""

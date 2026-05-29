@@ -186,6 +186,7 @@ async function main() {
 
   // Copy template files
   const templateFiles = [
+    ".gitattributes",
     "autopush.sh",
     "install.sh",
     "scripts/noggin-autopush.sh",
